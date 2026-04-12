@@ -35,6 +35,7 @@ function App() {
   const [currentTime, setCurrentTime] = useState(0)
   const [duration, setDuration] = useState(0)
   const [localPitch, setLocalPitch] = useState(1)
+  const [isVisualizerActive, setIsVisualizerActive] = useState(false)
   const [message, setMessage] = useState('Ready')
   const [form, setForm] = useState({
     title: '',
@@ -104,6 +105,39 @@ function App() {
 
     ctxRef.current = audioContext
     analyserRef.current = analyser
+  }
+
+  const stopVisualizerAnimation = () => {
+    if (rafRef.current) {
+      cancelAnimationFrame(rafRef.current)
+      rafRef.current = null
+    }
+    setIsVisualizerActive(false)
+    
+    // Draw static background
+    const canvas = canvasRef.current
+    const ctx = canvas?.getContext('2d')
+    if (!canvas || !ctx) return
+    
+    const dpr = Math.min(window.devicePixelRatio || 1, 2)
+    const width = window.innerWidth
+    const height = window.innerHeight
+    canvas.width = Math.floor(width * dpr)
+    canvas.height = Math.floor(height * dpr)
+    canvas.style.width = `${width}px`
+    canvas.style.height = `${height}px`
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
+    
+    // Static gradient (initial state)
+    const gradient = ctx.createLinearGradient(0, 0, width, height)
+    gradient.addColorStop(0, '#0a0e27')
+    gradient.addColorStop(0.25, '#1a0033')
+    gradient.addColorStop(0.5, '#1a0a40')
+    gradient.addColorStop(0.75, '#0d3b66')
+    gradient.addColorStop(1, '#0a0e27')
+    
+    ctx.fillStyle = gradient
+    ctx.fillRect(0, 0, width, height)
   }
 
   const animateBackground = () => {
@@ -187,6 +221,7 @@ function App() {
       try {
         await audioRef.current.play()
         setMessage('Playback running')
+        setIsVisualizerActive(true)
       } catch {
         setMessage('Could not play this track. Try another URL or M3U source.')
       }
@@ -203,6 +238,7 @@ function App() {
 
     if (isPlaying) {
       audioRef.current.pause()
+      stopVisualizerAnimation()
     } else {
       await beginPlayback()
     }
@@ -228,6 +264,8 @@ function App() {
 
   useEffect(() => {
     refreshState().catch(() => setMessage('Could not load API'))
+    // Initialize static background
+    stopVisualizerAnimation()
   }, [])
 
   useEffect(() => {
@@ -238,6 +276,7 @@ function App() {
     if (audioRef.current.src !== nextSrc) {
       audioRef.current.src = nextSrc
       audioRef.current.load()
+      stopVisualizerAnimation()
     }
     audioRef.current.playbackRate = current.pitch
     setLocalPitch(current.pitch)
@@ -295,7 +334,7 @@ function App() {
 
       <main className="shell">
         <header className="hero">
-          <h1>Doubly Linked DJ Player</h1>
+          <h1>Vibe Check</h1>
           <p>
             Real audio playback + bidirectional navigation with a true doubly linked list pointer model.
           </p>
@@ -310,7 +349,7 @@ function App() {
           </p>
 
           <div style={{ display: 'flex', justifyContent: 'center', marginTop: '1.2rem' }}>
-            <div className={`vinyl-record ${isPlaying ? 'playing' : ''}`} />
+            <div className={`vinyl-record ${isPlaying && current ? 'playing' : ''}`} />
           </div>
 
           <div className="waveform-container">
@@ -427,6 +466,22 @@ function App() {
             </button>
             <button onClick={() => postState('/playlist/sort', { by: 'title' })}>Sort by Title</button>
             <button onClick={() => postState('/playlist/sort', { by: 'artist' })}>Sort by Artist</button>
+          </div>
+
+          <div className="player-bar">
+            <button className="player-btn prev-btn" onClick={() => postState('/player/previous')} title="Previous">
+              ◀
+            </button>
+            <button className="player-btn play-btn" onClick={togglePlayPause} title={isPlaying ? 'Pause' : 'Play'}>
+              {isPlaying ? '⏸' : '▶'}
+            </button>
+            <button className="player-btn next-btn" onClick={() => postState('/player/next')} title="Next">
+              ▶
+            </button>
+            <div className="player-info">
+              <span className="song-title">{current ? current.title : 'No track selected'}</span>
+              <span className="song-artist">{current ? current.artist : ''}</span>
+            </div>
           </div>
         </section>
 
@@ -548,22 +603,6 @@ function App() {
 
         <footer className="status">{message}</footer>
       </main>
-
-      <div className="player-bar">
-        <button className="player-btn prev-btn" onClick={() => postState('/player/previous')} title="Previous">
-          ◀
-        </button>
-        <button className="player-btn play-btn" onClick={togglePlayPause} title={isPlaying ? 'Pause' : 'Play'}>
-          {isPlaying ? '⏸' : '▶'}
-        </button>
-        <button className="player-btn next-btn" onClick={() => postState('/player/next')} title="Next">
-          ▶
-        </button>
-        <div className="player-info">
-          <span className="song-title">{current ? current.title : 'No track selected'}</span>
-          <span className="song-artist">{current ? current.artist : ''}</span>
-        </div>
-      </div>
     </div>
   )
 }
