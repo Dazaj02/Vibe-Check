@@ -34,6 +34,7 @@ function App() {
   const [isPlaying, setIsPlaying] = useState(false)
   const [currentTime, setCurrentTime] = useState(0)
   const [duration, setDuration] = useState(0)
+  const [localPitch, setLocalPitch] = useState(1)
   const [message, setMessage] = useState('Ready')
   const [form, setForm] = useState({
     title: '',
@@ -136,6 +137,7 @@ function App() {
       const avg = dataArray.reduce((sum, value) => sum + value, 0) / bufferLength
       const pulse = avg / 255
 
+      // Multicolor gradient background based on audio
       const gradient = ctx.createRadialGradient(
         width * 0.5,
         height * 0.55,
@@ -144,8 +146,11 @@ function App() {
         height * 0.55,
         Math.max(width, height) * 0.75,
       )
-      gradient.addColorStop(0, `rgba(255, 165, 0, ${0.14 + pulse * 0.3})`)
-      gradient.addColorStop(0.5, `rgba(255, 60, 30, ${0.08 + pulse * 0.22})`)
+      
+      // Dynamic colors based on average frequency
+      const hueShift = (pulse * 360) % 360
+      gradient.addColorStop(0, `hsla(${hueShift}, 100%, 60%, ${0.2 + pulse * 0.3})`)
+      gradient.addColorStop(0.5, `hsla(${(hueShift + 120) % 360}, 100%, 50%, ${0.12 + pulse * 0.2})`)
       gradient.addColorStop(1, 'rgba(2, 6, 23, 0.92)')
 
       ctx.fillStyle = gradient
@@ -157,8 +162,12 @@ function App() {
         const index = Math.floor((i / barCount) * bufferLength)
         const value = dataArray[index]
         const barHeight = (value / 255) * height * 0.48
-        const hue = 18 + (value / 255) * 30
-        ctx.fillStyle = `hsla(${hue}, 100%, 58%, ${0.2 + value / 400})`
+        
+        // Multicolor bars based on frequency and position
+        const hue = (hueShift + (i / barCount) * 360) % 360
+        const saturation = 100 - (20 * Math.sin((i / barCount) * Math.PI))
+        
+        ctx.fillStyle = `hsla(${hue}, ${saturation}%, ${55 + value / 255 * 15}%, ${0.3 + value / 300})`
         ctx.fillRect(i * barWidth, height - barHeight, Math.max(barWidth - 1, 1), barHeight)
       }
 
@@ -231,6 +240,7 @@ function App() {
       audioRef.current.load()
     }
     audioRef.current.playbackRate = current.pitch
+    setLocalPitch(current.pitch)
   }, [current])
 
   useEffect(() => {
@@ -361,23 +371,56 @@ function App() {
               min="0.5"
               max="2"
               step="0.1"
-              value={current?.pitch ?? 1}
+              value={localPitch}
               onChange={(e) => {
                 const newPitch = parseFloat(e.target.value)
-                const delta = newPitch - (current?.pitch ?? 1)
-                handlePitchChange(delta)
+                setLocalPitch(newPitch)
+                if (audioRef.current) {
+                  audioRef.current.playbackRate = newPitch
+                }
+              }}
+              onMouseUp={(e) => {
+                const newPitch = parseFloat(e.currentTarget.value)
+                handlePitchChange(newPitch - (current?.pitch ?? 1))
+              }}
+              onTouchEnd={(e) => {
+                const newPitch = parseFloat(e.currentTarget.value)
+                handlePitchChange(newPitch - (current?.pitch ?? 1))
               }}
               className="pitch-slider"
             />
-            <span style={{ fontSize: '0.9rem', minWidth: '40px' }}>x{(current?.pitch ?? 1).toFixed(2)}</span>
+            <span style={{ fontSize: '0.9rem', minWidth: '40px' }}>x{localPitch.toFixed(2)}</span>
           </div>
 
           <div className="row">
             <button
               onClick={async () => {
-                const response = await fetch(`${API_BASE}/player/download`)
-                const data = (await response.json()) as { message: string }
-                setMessage(data.message)
+                if (!current) {
+                  setMessage('No song selected to download.')
+                  return
+                }
+                try {
+                  setMessage('Downloading...')
+                  const response = await fetch(`${API_BASE}/player/download`)
+                  if (!response.ok) {
+                    const error = await response.json()
+                    setMessage(error.detail || 'Download failed.')
+                    return
+                  }
+                  
+                  const blob = await response.blob()
+                  const url = window.URL.createObjectURL(blob)
+                  const link = document.createElement('a')
+                  link.href = url
+                  link.download = `${current.artist}_${current.title}.mp3`
+                  document.body.appendChild(link)
+                  link.click()
+                  document.body.removeChild(link)
+                  window.URL.revokeObjectURL(url)
+                  setMessage(`Downloaded: ${current.title}`)
+                } catch (error) {
+                  setMessage(`Download error: ${error}`)
+                }
               }}
             >
               ⬇ Download Current
