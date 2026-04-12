@@ -15,9 +15,23 @@ type PlaylistState = {
 
 const API_BASE = import.meta.env.VITE_API_URL || '/api'
 
+const toPlayableUrl = (audioUrl: string) => {
+  if (audioUrl.startsWith('http://') || audioUrl.startsWith('https://')) {
+    return `${API_BASE}/stream?url=${encodeURIComponent(audioUrl)}`
+  }
+  if (audioUrl.startsWith('/stream?url=')) {
+    return `${API_BASE}${audioUrl}`
+  }
+  if (audioUrl.startsWith('/')) {
+    return `${API_BASE}${audioUrl}`
+  }
+  return audioUrl
+}
+
 function App() {
   const [playlist, setPlaylist] = useState<Song[]>([])
   const [current, setCurrent] = useState<Song | null>(null)
+  const [isPlaying, setIsPlaying] = useState(false)
   const [message, setMessage] = useState('Ready')
   const [form, setForm] = useState({
     title: '',
@@ -26,6 +40,7 @@ function App() {
     pitch: '1',
     audio_url: '',
   })
+  const [m3uText, setM3uText] = useState('')
 
   const audioRef = useRef<HTMLAudioElement | null>(null)
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
@@ -156,11 +171,27 @@ function App() {
     }
 
     if (audioRef.current) {
-      await audioRef.current.play().catch(() => undefined)
-      setMessage('Playback running')
+      try {
+        await audioRef.current.play()
+        setMessage('Playback running')
+      } catch {
+        setMessage('Could not play this track. Try another URL or M3U source.')
+      }
     }
     if (!rafRef.current) {
       animateBackground()
+    }
+  }
+
+  const togglePlayPause = async () => {
+    if (!audioRef.current) {
+      return
+    }
+
+    if (isPlaying) {
+      audioRef.current.pause()
+    } else {
+      await beginPlayback()
     }
   }
 
@@ -172,12 +203,40 @@ function App() {
     if (!audioRef.current || !current) {
       return
     }
-    if (audioRef.current.src !== current.audio_url) {
-      audioRef.current.src = current.audio_url
+    const nextSrc = toPlayableUrl(current.audio_url)
+    if (audioRef.current.src !== nextSrc) {
+      audioRef.current.src = nextSrc
       audioRef.current.load()
     }
     audioRef.current.playbackRate = current.pitch
   }, [current])
+
+  useEffect(() => {
+    const audio = audioRef.current
+    if (!audio) {
+      return
+    }
+
+    const onError = () => setMessage('Audio failed to load. Check URL format or server access.')
+    const onCanPlay = () => setMessage('Track ready. Press Play.')
+    const onPlay = () => setIsPlaying(true)
+    const onPause = () => setIsPlaying(false)
+    const onEnded = () => setIsPlaying(false)
+
+    audio.addEventListener('error', onError)
+    audio.addEventListener('canplay', onCanPlay)
+    audio.addEventListener('play', onPlay)
+    audio.addEventListener('pause', onPause)
+    audio.addEventListener('ended', onEnded)
+
+    return () => {
+      audio.removeEventListener('error', onError)
+      audio.removeEventListener('canplay', onCanPlay)
+      audio.removeEventListener('play', onPlay)
+      audio.removeEventListener('pause', onPause)
+      audio.removeEventListener('ended', onEnded)
+    }
+  }, [])
 
   useEffect(() => {
     return () => {
@@ -290,6 +349,40 @@ function App() {
           </div>
         </section>
 
+        <section className="panel add-panel">
+          <h2>Import M3U</h2>
+          <textarea
+            value={m3uText}
+            onChange={(event) => setM3uText(event.target.value)}
+            placeholder="#EXTM3U&#10;#EXTINF:245,Artist - Song Title&#10;https://example.com/song.mp3"
+            rows={8}
+          />
+          <div className="row">
+            <button
+              onClick={() =>
+                postState('/playlist/import-m3u', {
+                  content: m3uText,
+                  insert_at_start: false,
+                  clear_existing: true,
+                })
+              }
+            >
+              Replace with M3U
+            </button>
+            <button
+              onClick={() =>
+                postState('/playlist/import-m3u', {
+                  content: m3uText,
+                  insert_at_start: false,
+                  clear_existing: false,
+                })
+              }
+            >
+              Append M3U
+            </button>
+          </div>
+        </section>
+
         <section className="panel list-panel">
           <h2>Playlist</h2>
           <ul>
@@ -317,6 +410,22 @@ function App() {
 
         <footer className="status">{message}</footer>
       </main>
+
+      <div className="player-bar">
+        <button className="player-btn prev-btn" onClick={() => postState('/player/previous')} title="Previous">
+          ◀
+        </button>
+        <button className="player-btn play-btn" onClick={togglePlayPause} title={isPlaying ? 'Pause' : 'Play'}>
+          {isPlaying ? '⏸' : '▶'}
+        </button>
+        <button className="player-btn next-btn" onClick={() => postState('/player/next')} title="Next">
+          ▶
+        </button>
+        <div className="player-info">
+          <span className="song-title">{current ? current.title : 'No track selected'}</span>
+          <span className="song-artist">{current ? current.artist : ''}</span>
+        </div>
+      </div>
     </div>
   )
 }
