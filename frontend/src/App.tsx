@@ -32,6 +32,8 @@ function App() {
   const [playlist, setPlaylist] = useState<Song[]>([])
   const [current, setCurrent] = useState<Song | null>(null)
   const [isPlaying, setIsPlaying] = useState(false)
+  const [currentTime, setCurrentTime] = useState(0)
+  const [duration, setDuration] = useState(0)
   const [message, setMessage] = useState('Ready')
   const [form, setForm] = useState({
     title: '',
@@ -47,6 +49,7 @@ function App() {
   const ctxRef = useRef<AudioContext | null>(null)
   const analyserRef = useRef<AnalyserNode | null>(null)
   const rafRef = useRef<number | null>(null)
+  const waveformDataRef = useRef<Uint8Array | null>(null)
 
   const currentIndex = useMemo(
     () => playlist.findIndex((song) => song.title === current?.title),
@@ -128,6 +131,7 @@ function App() {
 
     const draw = () => {
       analyser.getByteFrequencyData(dataArray)
+      waveformDataRef.current = new Uint8Array(dataArray)
 
       const avg = dataArray.reduce((sum, value) => sum + value, 0) / bufferLength
       const pulse = avg / 255
@@ -195,6 +199,24 @@ function App() {
     }
   }
 
+  const handleProgressChange = (newTime: number) => {
+    if (audioRef.current) {
+      audioRef.current.currentTime = newTime
+      setCurrentTime(newTime)
+    }
+  }
+
+  const handlePitchChange = (delta: number) => {
+    postState('/player/pitch', { delta })
+  }
+
+  const formatTime = (seconds: number) => {
+    if (!seconds || isNaN(seconds)) return '00:00'
+    const mins = Math.floor(seconds / 60)
+    const secs = Math.floor(seconds % 60)
+    return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`
+  }
+
   useEffect(() => {
     refreshState().catch(() => setMessage('Could not load API'))
   }, [])
@@ -218,16 +240,23 @@ function App() {
     }
 
     const onError = () => setMessage('Audio failed to load. Check URL format or server access.')
-    const onCanPlay = () => setMessage('Track ready. Press Play.')
+    const onCanPlay = () => {
+      setMessage('Track ready. Press Play.')
+      setDuration(audio.duration)
+    }
     const onPlay = () => setIsPlaying(true)
     const onPause = () => setIsPlaying(false)
     const onEnded = () => setIsPlaying(false)
+    const onTimeUpdate = () => setCurrentTime(audio.currentTime)
+    const onLoadedMetadata = () => setDuration(audio.duration)
 
     audio.addEventListener('error', onError)
     audio.addEventListener('canplay', onCanPlay)
     audio.addEventListener('play', onPlay)
     audio.addEventListener('pause', onPause)
     audio.addEventListener('ended', onEnded)
+    audio.addEventListener('timeupdate', onTimeUpdate)
+    audio.addEventListener('loadedmetadata', onLoadedMetadata)
 
     return () => {
       audio.removeEventListener('error', onError)
@@ -235,6 +264,8 @@ function App() {
       audio.removeEventListener('play', onPlay)
       audio.removeEventListener('pause', onPause)
       audio.removeEventListener('ended', onEnded)
+      audio.removeEventListener('timeupdate', onTimeUpdate)
+      audio.removeEventListener('loadedmetadata', onLoadedMetadata)
     }
   }, [])
 
@@ -267,16 +298,80 @@ function App() {
           <p className="meta">
             Pointers: prev -&gt; {previousTitle} | next -&gt; {nextTitle}
           </p>
-          <div className="row">
-            <button onClick={() => postState('/player/previous')}>Previous</button>
-            <button onClick={() => postState('/player/next')}>Next</button>
-            <button onClick={beginPlayback}>Play</button>
+
+          <div style={{ display: 'flex', justifyContent: 'center', marginTop: '1.2rem' }}>
+            <div className={`vinyl-record ${isPlaying ? 'playing' : ''}`} />
           </div>
-          <div className="row">
-            <button onClick={() => postState('/player/pitch', { delta: -0.1 })}>Pitch -</button>
-            <button onClick={() => postState('/player/pitch/reset')}>Pitch Reset</button>
-            <button onClick={() => postState('/player/pitch', { delta: 0.1 })}>Pitch +</button>
+
+          <div className="waveform-container">
+            {[...Array(32)].map((_, i) => {
+              const dataIndex = Math.floor((i / 32) * (waveformDataRef.current?.length || 0))
+              const value = (waveformDataRef.current?.[dataIndex] || 0) / 255
+              return (
+                <div
+                  key={i}
+                  className="waveform-bar"
+                  style={{
+                    height: `${20 + value * 80}%`,
+                  }}
+                />
+              )
+            })}
           </div>
+
+          <div className="progress-container">
+            <div
+              className="progress-bar"
+              style={{
+                width: duration > 0 ? `${(currentTime / duration) * 100}%` : '0%',
+              }}
+              onClick={(e) => {
+                const rect = e.currentTarget.parentElement?.getBoundingClientRect()
+                if (rect) {
+                  const newTime = ((e.clientX - rect.left) / rect.width) * duration
+                  handleProgressChange(newTime)
+                }
+              }}
+            />
+          </div>
+
+          <div
+            style={{
+              display: 'flex',
+              justifyContent: 'space-between',
+              marginTop: '0.5rem',
+              fontSize: '0.8rem',
+              color: 'var(--muted)',
+            }}
+          >
+            <span>{formatTime(currentTime)}</span>
+            <span>{formatTime(duration)}</span>
+          </div>
+
+          <div className="row">
+            <button onClick={() => postState('/player/previous')}>◀ Previous</button>
+            <button onClick={togglePlayPause}>{isPlaying ? '⏸ Pause' : '▶ Play'}</button>
+            <button onClick={() => postState('/player/next')}>Next ▶</button>
+          </div>
+
+          <div className="pitch-slider-container">
+            <label>Pitch</label>
+            <input
+              type="range"
+              min="0.5"
+              max="2"
+              step="0.1"
+              value={current?.pitch ?? 1}
+              onChange={(e) => {
+                const newPitch = parseFloat(e.target.value)
+                const delta = newPitch - (current?.pitch ?? 1)
+                handlePitchChange(delta)
+              }}
+              className="pitch-slider"
+            />
+            <span style={{ fontSize: '0.9rem', minWidth: '40px' }}>x{(current?.pitch ?? 1).toFixed(2)}</span>
+          </div>
+
           <div className="row">
             <button
               onClick={async () => {
@@ -285,7 +380,7 @@ function App() {
                 setMessage(data.message)
               }}
             >
-              Download Current
+              ⬇ Download Current
             </button>
             <button onClick={() => postState('/playlist/sort', { by: 'title' })}>Sort by Title</button>
             <button onClick={() => postState('/playlist/sort', { by: 'artist' })}>Sort by Artist</button>
