@@ -67,13 +67,43 @@ The backend list is the source of truth. Every UI action calls an API endpoint t
 - The frontend re-renders `current` and all songs based on API state.
 - The app uses the active audio stream with `AnalyserNode` and paints a live canvas background that pulses with track frequency data.
 
-## Real Music
+## M3U Import Support
 
-The seeded songs are real classical works with public audio URLs:
+The backend starts with an empty playlist. You can import tracks from an M3U playlist using:
 
-- `Nocturne Op. 9 No. 2` - Frederic Chopin
-- `Fur Elise` - Ludwig van Beethoven
-- `Eine kleine Nachtmusik` - Wolfgang Amadeus Mozart
+- `POST /playlist/import-m3u`
+
+Request body:
+
+```json
+{
+  "content": "#EXTM3U\n#EXTINF:245,Artist - Song Title\nhttps://example.com/song.mp3",
+  "insert_at_start": false,
+  "clear_existing": true
+}
+```
+
+Behavior:
+
+- Parses `#EXTINF` metadata when available.
+- Uses URL as fallback title if metadata is missing.
+- Can replace the full playlist (`clear_existing: true`) or append.
+
+## Reliable Playback for Any Song URL
+
+The backend exposes `GET /stream?url=<encoded_source>` and the frontend plays through this endpoint.
+
+Why this helps:
+
+- Reduces browser CORS playback failures for remote audio hosts.
+- Keeps one consistent audio origin from your backend/frontend domain.
+- Works for direct links in M3U and manual track insertion.
+
+Recommendation for "any song":
+
+- Prefer direct audio links (`.mp3`, `.ogg`, `.wav`, `.m4a`) over pages.
+- Import from M3U playlists that already contain streamable media URLs.
+- If a source blocks server-side fetches, use legally accessible providers/APIs.
 
 ## Run Locally
 
@@ -152,7 +182,7 @@ npm run dev
 
 3. Open the Vite URL and verify:
 
-- Playlist loads with seeded real tracks.
+- Use the `Import M3U` section to load songs.
 - `Play` starts audio.
 - Background visualizer glows and reacts to rhythm.
 - `Next` and `Previous` update current song and pointer labels.
