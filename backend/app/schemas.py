@@ -28,3 +28,9 @@ class PitchChange(BaseModel):
 
 class SortRequest(BaseModel):
     by: str
+
+
+class M3UImportRequest(BaseModel):
+    content: str = Field(min_length=1)
+    insert_at_start: bool = False
+    clear_existing: bool = False
