@@ -35,16 +35,12 @@ function App() {
   const [currentTime, setCurrentTime] = useState(0)
   const [duration, setDuration] = useState(0)
   const [localPitch, setLocalPitch] = useState(1)
+  const [volume, setVolume] = useState(1)
   const [isVisualizerActive, setIsVisualizerActive] = useState(false)
+  const [isDraggingProgress, setIsDraggingProgress] = useState(false)
   const [message, setMessage] = useState('Ready')
-  const [form, setForm] = useState({
-    title: '',
-    artist: '',
-    duration: '03:00',
-    pitch: '1',
-    audio_url: '',
-  })
-  const [m3uText, setM3uText] = useState('')
+  const [localFiles, setLocalFiles] = useState<File[]>([])
+  const [isDraggingFiles, setIsDraggingFiles] = useState(false)
 
   const audioRef = useRef<HTMLAudioElement | null>(null)
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
@@ -52,6 +48,8 @@ function App() {
   const analyserRef = useRef<AnalyserNode | null>(null)
   const rafRef = useRef<number | null>(null)
   const waveformDataRef = useRef<Uint8Array | null>(null)
+  const progressRef = useRef<HTMLDivElement | null>(null)
+  const volumeRef = useRef<number>(1)
 
   const currentIndex = useMemo(
     () => playlist.findIndex((song) => song.title === current?.title),
@@ -63,6 +61,13 @@ function App() {
     currentIndex >= 0 && currentIndex < playlist.length - 1
       ? playlist[currentIndex + 1]?.title
       : '[Tail]'
+
+  // Get upcoming songs for the queue (next 5 songs)
+  const queueSongs = useMemo(() => {
+    if (currentIndex < 0 || currentIndex >= playlist.length) return []
+    const upcoming = playlist.slice(currentIndex + 1)
+    return upcoming.slice(0, 5)
+  }, [playlist, currentIndex])
 
   const refreshState = async () => {
     const response = await fetch(`${API_BASE}/playlist`)
@@ -87,6 +92,19 @@ function App() {
     const data = (await response.json()) as PlaylistState
     setPlaylist(data.songs)
     setCurrent(data.current)
+    
+    // Auto-play the new song if we were already playing
+    if (data.current && isPlaying && audioRef.current) {
+      setTimeout(() => {
+        audioRef.current?.play().catch(() => {
+          setMessage('Could not auto-play next track')
+        })
+        // Restart visualizer animation for the new track
+        if (!rafRef.current) {
+          animateBackground()
+        }
+      }, 100)
+    }
   }
 
   const setupAudioAnalyzer = () => {
@@ -120,7 +138,7 @@ function App() {
     if (!canvas || !ctx) return
     
     const dpr = Math.min(window.devicePixelRatio || 1, 2)
-    const width = window.innerWidth
+    const width = window.innerWidth + (window.innerWidth - document.documentElement.clientWidth)
     const height = window.innerHeight
     canvas.width = Math.floor(width * dpr)
     canvas.height = Math.floor(height * dpr)
@@ -153,7 +171,7 @@ function App() {
     }
 
     const dpr = Math.min(window.devicePixelRatio || 1, 2)
-    const width = window.innerWidth
+    const width = window.innerWidth + (window.innerWidth - document.documentElement.clientWidth)
     const height = window.innerHeight
     canvas.width = Math.floor(width * dpr)
     canvas.height = Math.floor(height * dpr)
@@ -181,16 +199,18 @@ function App() {
         Math.max(width, height) * 0.75,
       )
       
-      // Dynamic colors based on average frequency
+      // Dynamic colors based on average frequency and volume
       const hueShift = (pulse * 360) % 360
-      gradient.addColorStop(0, `hsla(${hueShift}, 100%, 60%, ${0.2 + pulse * 0.3})`)
-      gradient.addColorStop(0.5, `hsla(${(hueShift + 120) % 360}, 100%, 50%, ${0.12 + pulse * 0.2})`)
+      const volumeBoost = volumeRef.current
+      gradient.addColorStop(0, `hsla(${hueShift}, 100%, 60%, ${(0.2 + pulse * 0.3) * volumeBoost})`)
+      gradient.addColorStop(0.5, `hsla(${(hueShift + 120) % 360}, 100%, 50%, ${(0.12 + pulse * 0.2) * volumeBoost})`)
       gradient.addColorStop(1, 'rgba(2, 6, 23, 0.92)')
 
       ctx.fillStyle = gradient
       ctx.fillRect(0, 0, width, height)
 
-      const barCount = 96
+      // Calculate bar count based on screen width - 1 bar per 2 pixels for dense coverage
+      const barCount = Math.ceil(width / 2)
       const barWidth = width / barCount
       for (let i = 0; i < barCount; i += 1) {
         const index = Math.floor((i / barCount) * bufferLength)
@@ -200,9 +220,10 @@ function App() {
         // Multicolor bars based on frequency and position
         const hue = (hueShift + (i / barCount) * 360) % 360
         const saturation = 100 - (20 * Math.sin((i / barCount) * Math.PI))
+        const volumeModifier = 0.3 + (volumeRef.current * 0.4)
         
-        ctx.fillStyle = `hsla(${hue}, ${saturation}%, ${55 + value / 255 * 15}%, ${0.3 + value / 300})`
-        ctx.fillRect(i * barWidth, height - barHeight, Math.max(barWidth - 1, 1), barHeight)
+        ctx.fillStyle = `hsla(${hue}, ${saturation}%, ${55 + value / 255 * 15}%, ${volumeModifier + value / 300})`
+        ctx.fillRect(i * barWidth, height - barHeight, barWidth, barHeight)
       }
 
       rafRef.current = requestAnimationFrame(draw)
@@ -269,6 +290,13 @@ function App() {
   }, [])
 
   useEffect(() => {
+    if (audioRef.current) {
+      audioRef.current.volume = volume
+      volumeRef.current = volume
+    }
+  }, [volume])
+
+  useEffect(() => {
     if (!audioRef.current || !current) {
       return
     }
@@ -276,7 +304,7 @@ function App() {
     if (audioRef.current.src !== nextSrc) {
       audioRef.current.src = nextSrc
       audioRef.current.load()
-      stopVisualizerAnimation()
+      // Don't stop the visualizer animation here - let it continue
     }
     audioRef.current.playbackRate = current.pitch
     setLocalPitch(current.pitch)
@@ -327,6 +355,19 @@ function App() {
     }
   }, [])
 
+  useEffect(() => {
+    const handleMouseUp = () => setIsDraggingProgress(false)
+    const handleTouchEnd = () => setIsDraggingProgress(false)
+    
+    window.addEventListener('mouseup', handleMouseUp)
+    window.addEventListener('touchend', handleTouchEnd)
+    
+    return () => {
+      window.removeEventListener('mouseup', handleMouseUp)
+      window.removeEventListener('touchend', handleTouchEnd)
+    }
+  }, [])
+
   return (
     <div className="page">
       <canvas ref={canvasRef} className="visualizer-bg" />
@@ -335,11 +376,9 @@ function App() {
       <main className="shell">
         <header className="hero">
           <h1>Vibe Check</h1>
-          <p>
-            Real audio playback + bidirectional navigation with a true doubly linked list pointer model.
-          </p>
         </header>
 
+        <div className="columns-container">
         <section className="panel current-panel">
           <h2>Now Playing</h2>
           <p className="title">{current ? `${current.title} - ${current.artist}` : 'No track selected'}</p>
@@ -368,7 +407,29 @@ function App() {
             })}
           </div>
 
-          <div className="progress-container">
+          <div
+            ref={progressRef}
+            className="progress-container"
+            onMouseDown={() => setIsDraggingProgress(true)}
+            onTouchStart={() => setIsDraggingProgress(true)}
+            onMouseUp={() => setIsDraggingProgress(false)}
+            onTouchEnd={() => setIsDraggingProgress(false)}
+            onMouseMove={(e) => {
+              if (isDraggingProgress && progressRef.current) {
+                const rect = progressRef.current.getBoundingClientRect()
+                const newTime = ((e.clientX - rect.left) / rect.width) * duration
+                handleProgressChange(Math.max(0, Math.min(newTime, duration)))
+              }
+            }}
+            onTouchMove={(e) => {
+              if (isDraggingProgress && progressRef.current) {
+                const touch = e.touches[0]
+                const rect = progressRef.current.getBoundingClientRect()
+                const newTime = ((touch.clientX - rect.left) / rect.width) * duration
+                handleProgressChange(Math.max(0, Math.min(newTime, duration)))
+              }
+            }}
+          >
             <div
               className="progress-bar"
               style={{
@@ -398,9 +459,9 @@ function App() {
           </div>
 
           <div className="row">
-            <button onClick={() => postState('/player/previous')}>◀ Previous</button>
+            <button onClick={() => postState('/player/previous')}>⏮ Previous</button>
             <button onClick={togglePlayPause}>{isPlaying ? '⏸ Pause' : '▶ Play'}</button>
-            <button onClick={() => postState('/player/next')}>Next ▶</button>
+            <button onClick={() => postState('/player/next')}>Next ⏭</button>
           </div>
 
           <div className="pitch-slider-container">
@@ -429,6 +490,23 @@ function App() {
               className="pitch-slider"
             />
             <span style={{ fontSize: '0.9rem', minWidth: '40px' }}>x{localPitch.toFixed(2)}</span>
+          </div>
+
+          <div className="pitch-slider-container">
+            <label>Volume</label>
+            <input
+              type="range"
+              min="0"
+              max="1"
+              step="0.05"
+              value={volume}
+              onChange={(e) => {
+                const newVolume = parseFloat(e.target.value)
+                setVolume(newVolume)
+              }}
+              className="pitch-slider"
+            />
+            <span style={{ fontSize: '0.9rem', minWidth: '40px' }}>{Math.round(volume * 100)}%</span>
           </div>
 
           <div className="row">
@@ -467,115 +545,9 @@ function App() {
             <button onClick={() => postState('/playlist/sort', { by: 'title' })}>Sort by Title</button>
             <button onClick={() => postState('/playlist/sort', { by: 'artist' })}>Sort by Artist</button>
           </div>
-
-          <div className="player-bar">
-            <button className="player-btn prev-btn" onClick={() => postState('/player/previous')} title="Previous">
-              ◀
-            </button>
-            <button className="player-btn play-btn" onClick={togglePlayPause} title={isPlaying ? 'Pause' : 'Play'}>
-              {isPlaying ? '⏸' : '▶'}
-            </button>
-            <button className="player-btn next-btn" onClick={() => postState('/player/next')} title="Next">
-              ▶
-            </button>
-            <div className="player-info">
-              <span className="song-title">{current ? current.title : 'No track selected'}</span>
-              <span className="song-artist">{current ? current.artist : ''}</span>
-            </div>
-          </div>
         </section>
 
-        <section className="panel add-panel">
-          <h2>Add Song</h2>
-          <div className="grid">
-            <input
-              value={form.title}
-              onChange={(event) => setForm((prev) => ({ ...prev, title: event.target.value }))}
-              placeholder="Title"
-            />
-            <input
-              value={form.artist}
-              onChange={(event) => setForm((prev) => ({ ...prev, artist: event.target.value }))}
-              placeholder="Artist"
-            />
-            <input
-              value={form.duration}
-              onChange={(event) => setForm((prev) => ({ ...prev, duration: event.target.value }))}
-              placeholder="mm:ss"
-            />
-            <input
-              value={form.pitch}
-              type="number"
-              min={0.5}
-              max={2}
-              step={0.1}
-              onChange={(event) => setForm((prev) => ({ ...prev, pitch: event.target.value }))}
-              placeholder="Pitch"
-            />
-            <input
-              value={form.audio_url}
-              onChange={(event) => setForm((prev) => ({ ...prev, audio_url: event.target.value }))}
-              placeholder="Direct MP3 URL"
-            />
-          </div>
-          <div className="row">
-            <button
-              onClick={() =>
-                postState('/playlist/start', {
-                  ...form,
-                  pitch: Number(form.pitch),
-                })
-              }
-            >
-              Insert at Start
-            </button>
-            <button
-              onClick={() =>
-                postState('/playlist/end', {
-                  ...form,
-                  pitch: Number(form.pitch),
-                })
-              }
-            >
-              Insert at End
-            </button>
-          </div>
-        </section>
-
-        <section className="panel add-panel">
-          <h2>Import M3U</h2>
-          <textarea
-            value={m3uText}
-            onChange={(event) => setM3uText(event.target.value)}
-            placeholder="#EXTM3U&#10;#EXTINF:245,Artist - Song Title&#10;https://example.com/song.mp3"
-            rows={8}
-          />
-          <div className="row">
-            <button
-              onClick={() =>
-                postState('/playlist/import-m3u', {
-                  content: m3uText,
-                  insert_at_start: false,
-                  clear_existing: true,
-                })
-              }
-            >
-              Replace with M3U
-            </button>
-            <button
-              onClick={() =>
-                postState('/playlist/import-m3u', {
-                  content: m3uText,
-                  insert_at_start: false,
-                  clear_existing: false,
-                })
-              }
-            >
-              Append M3U
-            </button>
-          </div>
-        </section>
-
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
         <section className="panel list-panel">
           <h2>Playlist</h2>
           <ul>
@@ -600,6 +572,170 @@ function App() {
             ))}
           </ul>
         </section>
+
+        <section className="panel add-panel">
+          <h2>Upload Local Music</h2>
+          <div
+            className="upload-zone"
+            style={{
+              border: `2px dashed ${isDraggingFiles ? '#4CAF50' : 'var(--border)'}`,
+              borderRadius: '8px',
+              padding: '2rem',
+              textAlign: 'center',
+              cursor: 'pointer',
+              transition: 'all 0.3s ease',
+              backgroundColor: isDraggingFiles ? 'rgba(76, 175, 80, 0.1)' : 'transparent',
+            }}
+            onDragOver={(e) => {
+              e.preventDefault()
+              setIsDraggingFiles(true)
+            }}
+            onDragLeave={() => setIsDraggingFiles(false)}
+            onDrop={(e) => {
+              e.preventDefault()
+              setIsDraggingFiles(false)
+              const files = Array.from(e.dataTransfer.files).filter((file) =>
+                file.type.startsWith('audio/'),
+              )
+              setLocalFiles((prev) => [...prev, ...files])
+            }}
+          >
+            <input
+              type="file"
+              multiple
+              accept="audio/*"
+              id="file-input"
+              style={{ display: 'none' }}
+              onChange={(e) => {
+                const files = Array.from(e.currentTarget.files || [])
+                setLocalFiles((prev) => [...prev, ...files])
+              }}
+            />
+            <label htmlFor="file-input" style={{ cursor: 'pointer', display: 'block' }}>
+              <p style={{ marginBottom: '0.5rem' }}>Drag and drop audio files here</p>
+              <small style={{ color: 'var(--muted)' }}>Supported: MP3, WAV, FLAC, OGG</small>
+            </label>
+          </div>
+
+          <button
+            onClick={() => document.getElementById('file-input')?.click()}
+            style={{ width: '100%', marginTop: '1rem' }}
+          >
+            📁 Browse Files
+          </button>
+
+          {localFiles.length > 0 && (
+            <div style={{ marginTop: '1rem' }}>
+              <h3 style={{ fontSize: '0.95rem', marginBottom: '0.5rem' }}>Selected Files:</h3>
+              <ul style={{ listStyle: 'none', padding: 0 }}>
+                {localFiles.map((file, index) => (
+                  <li
+                    key={index}
+                    style={{
+                      display: 'flex',
+                      justifyContent: 'space-between',
+                      alignItems: 'center',
+                      padding: '0.5rem',
+                      borderBottom: '1px solid var(--border)',
+                    }}
+                  >
+                    <span style={{ fontSize: '0.9rem' }}>{file.name}</span>
+                    <button
+                      onClick={() => setLocalFiles((prev) => prev.filter((_, i) => i !== index))}
+                      className="danger"
+                      style={{ padding: '0.3rem 0.6rem', fontSize: '0.85rem' }}
+                    >
+                      Remove
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+
+          <div className="row" style={{ marginTop: '1rem' }}>
+            <button
+              onClick={async () => {
+                if (localFiles.length === 0) {
+                  setMessage('No files selected to upload.')
+                  return
+                }
+
+                try {
+                  setMessage('Uploading files...')
+                  const formData = new FormData()
+                  localFiles.forEach((file) => {
+                    formData.append('files', file)
+                  })
+
+                  const response = await fetch(`${API_BASE}/playlist/upload-local`, {
+                    method: 'POST',
+                    body: formData,
+                    // Don't set Content-Type header - browser will set it automatically with boundary
+                  })
+
+                  if (!response.ok) {
+                    let errorMessage = 'Upload failed.'
+                    try {
+                      const error = await response.json()
+                      errorMessage = error.detail || errorMessage
+                    } catch {
+                      errorMessage = `HTTP ${response.status}: ${response.statusText}`
+                    }
+                    setMessage(errorMessage)
+                    return
+                  }
+
+                  const data = (await response.json()) as PlaylistState
+                  setPlaylist(data.songs)
+                  setCurrent(data.current)
+                  const uploadedCount = localFiles.length
+                  setLocalFiles([])
+                  setMessage(`Successfully uploaded ${uploadedCount} file(s).`)
+                } catch (error) {
+                  const errorMsg = error instanceof Error ? error.message : String(error)
+                  setMessage(`Upload error: ${errorMsg}`)
+                }
+              }}
+              disabled={localFiles.length === 0}
+            >
+              ⬆ Upload to Playlist
+            </button>
+            <button
+              onClick={() => setLocalFiles([])}
+              disabled={localFiles.length === 0}
+            >
+               Clear Selection
+             </button>
+            </div>
+          </section>
+        </div>
+
+        <section className="panel queue-panel">
+          <h2>Up Next</h2>
+          {queueSongs.length === 0 ? (
+            <p style={{ color: 'var(--muted)', margin: 0, marginTop: '0.5rem' }}>
+              No songs queued. Add more songs or navigate the playlist.
+            </p>
+          ) : (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.8rem', marginTop: '0.5rem' }}>
+              {queueSongs.map((song, index) => (
+                <div
+                  key={`${song.title}-${index}`}
+                  className="queue-item"
+                  onClick={() => postState(`/player/select/${encodeURIComponent(song.title)}`)}
+                >
+                  <div className="queue-item-text">
+                    <p className="queue-item-title">{index + 1}. {song.title}</p>
+                    <p className="queue-item-artist">{song.artist}</p>
+                  </div>
+                  <div className="queue-item-duration">{song.duration}</div>
+                </div>
+              ))}
+            </div>
+          )}
+        </section>
+        </div>
 
         <footer className="status">{message}</footer>
       </main>
