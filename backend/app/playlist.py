@@ -98,15 +98,23 @@ class DoublyLinkedPlaylist:
         self.current = self.find(current_title) if current_title else self.head
 
     def next_song(self) -> Optional[Song]:
-        if self.current is None or self.current.next is None:
+        if self.current is None:
             return None
-        self.current = self.current.next
+        if self.current.next is not None:
+            self.current = self.current.next
+        elif self.head is not None:
+            # Wrap around to the beginning
+            self.current = self.head
         return self.current.song
 
     def previous_song(self) -> Optional[Song]:
-        if self.current is None or self.current.prev is None:
+        if self.current is None:
             return None
-        self.current = self.current.prev
+        if self.current.prev is not None:
+            self.current = self.current.prev
+        elif self.tail is not None:
+            # Wrap around to the end
+            self.current = self.tail
         return self.current.song
 
     def modulate_current_pitch(self, delta: float) -> Optional[float]:
