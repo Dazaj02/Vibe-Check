@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 import re
+import base64
+import io
 from urllib.parse import quote, unquote
 
 import httpx
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from starlette.background import BackgroundTask
+from mutagen import File as MutagenFile
 
 from .models import Song
 from .playlist import DoublyLinkedPlaylist
@@ -197,6 +200,59 @@ async def stream_audio(url: str, request: Request):
         media_type=upstream_response.headers.get("content-type", "audio/mpeg"),
         background=BackgroundTask(client.aclose),
     )
+
+
+@app.post("/playlist/upload-local", response_model=PlaylistState)
+async def upload_local_files(files: list[UploadFile] = File(...)) -> PlaylistState:
+    if not files:
+        raise HTTPException(status_code=400, detail="No files provided")
+    
+    for file in files:
+        if not file.filename or not file.content_type or not file.content_type.startswith("audio/"):
+            continue
+        
+        # Read file content
+        contents = await file.read()
+        if not contents:
+            continue
+        
+        # Extract metadata
+        title = file.filename.rsplit(".", 1)[0]
+        artist = "Local Upload"
+        duration = "00:00"
+        
+        try:
+            file_bytes = io.BytesIO(contents)
+            audio_file = MutagenFile(file_bytes)
+            if audio_file is not None and audio_file.info is not None:
+                duration_seconds = int(audio_file.info.length)
+                duration = f"{duration_seconds // 60:02d}:{duration_seconds % 60:02d}"
+                
+                # Try to extract title and artist from metadata
+                if audio_file.tags:
+                    if isinstance(audio_file.tags, dict):
+                        title_list = audio_file.tags.get("title", [file.filename.rsplit(".", 1)[0]])
+                        artist_list = audio_file.tags.get("artist", ["Local Upload"])
+                        title = title_list[0] if title_list else title
+                        artist = artist_list[0] if artist_list else artist
+        except Exception:
+            # If metadata extraction fails, use defaults
+            pass
+        
+        # Create data URL from file content
+        file_data_url = f"data:audio/{file.content_type.split('/')[-1]};base64,{base64.b64encode(contents).decode()}"
+        
+        # Add song to playlist
+        song = Song(
+            title=title,
+            artist=artist,
+            duration=duration,
+            pitch=1.0,
+            audio_url=file_data_url,
+        )
+        playlist.insert_end(song)
+    
+    return get_state()
 
 
 @app.delete("/playlist/{title}", response_model=PlaylistState)
